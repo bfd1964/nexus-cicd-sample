@@ -1,0 +1,266 @@
+name: TM post-merge sync
+
+# What happens after code lands on main depends on post_merge.mode in
+# .threatmodeler.yml:
+#
+#   off      nothing; a NexusAI drift check keeps the model current.
+#   propose  on each push, a read-only run comments the proposed model
+#            changes on the merged PR(s). Nexus is not changed.
+#   apply    as propose on each push; a person applies the changes by running
+#            this workflow by hand with "apply" checked. That manual run is
+#            the approval. It syncs tm-synced..HEAD, saves a version and moves
+#            the tm-synced tag.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Apply the changes to Nexus and save a version (post_merge.mode must be apply)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write        # move the tm-synced tag
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: tm-post-merge
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TM: .github/threatmodeler/scripts/tm.py
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pyyaml jsonschema
+
+      - name: Read config
+        id: cfg
+        run: python "$TM" config
+
+      - name: Decide what to run
+        id: plan
+        env:
+          MODE: ${{ steps.cfg.outputs.post_merge_mode }}
+          GUID: ${{ steps.cfg.outputs.project_guid }}
+          APPLY: ${{ github.event_name == 'workflow_dispatch' && inputs.apply }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          git fetch --tags --force --quiet
+          to="$(git rev-parse HEAD)"
+          # Before setup is finished there is nothing to sync: skip pushes quietly,
+          # but tell a person who asked for apply what's missing.
+          if [ -z "$GUID" ]; then
+            if [ "$APPLY" = "true" ]; then
+              echo "::error::threatmodeler.project_guid is empty. Create the baseline threat model and set its GUID in .threatmodeler.yml."
+              exit 1
+            fi
+            echo "run=none" >> "$GITHUB_OUTPUT"
+            echo "No baseline threat model yet (project_guid is empty), so there is nothing to sync." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$MODE" = "off" ]; then
+            echo "run=none" >> "$GITHUB_OUTPUT"
+            echo "post_merge.mode is off: the model is kept current by a NexusAI drift check." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$APPLY" = "true" ]; then
+            if [ "$MODE" != "apply" ]; then
+              echo "::error::Apply was requested but post_merge.mode is '$MODE'. Set it to apply first."
+              exit 1
+            fi
+            if ! from="$(git rev-list -n1 tm-synced 2>/dev/null)"; then
+              echo "::error::Tag tm-synced not found. Tag the commit the baseline model was built from: git tag tm-synced <commit> && git push origin tm-synced"
+              exit 1
+            fi
+            run=apply
+          else
+            # Propose covers just this push, so each merge gets its own comment.
+            if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              if ! from="$(git rev-parse --verify --quiet HEAD~1)"; then
+                echo "run=none" >> "$GITHUB_OUTPUT"
+                echo "First commit in the repository: nothing to compare with." >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+            else
+              from="$BEFORE"
+            fi
+            run=propose
+          fi
+          { echo "run=$run"; echo "from=$from"; echo "to=$to"; } >> "$GITHUB_OUTPUT"
+          echo "Run: $run for $from..$to"
+          python "$TM" prefilter --base "$from" --head "$to"
+
+      - name: Find merged PRs and their check results
+        id: prs
+        if: steps.plan.outputs.run != 'none' && steps.plan.outputs.relevant == 'true'
+        run: |
+          mkdir -p .tm/pr-results
+          prs=""
+          for sha in $(git rev-list "${{ steps.plan.outputs.from }}..${{ steps.plan.outputs.to }}"); do
+            for n in $(gh api "repos/${{ github.repository }}/commits/$sha/pulls" --jq '.[] | select(.merged_at != null) | .number'); do
+              case " $prs " in *" $n "*) ;; *) prs="$prs $n" ;; esac
+            done
+          done
+          # shellcheck disable=SC2086
+          prs="$(echo $prs | tr ' ' '\n' | sort -n | tr '\n' ' ' | xargs)"
+          for n in $prs; do
+            python "$TM" last-result --pr "$n" --out ".tm/pr-results/pr-$n.json"
+          done
+          # ThreatModeler version labels reject "+" (allowed: letters, digits,
+          # spaces and _ . : ; - @ % ! , ? & * $), so join PR numbers with "_".
+          joined="$(echo "$prs" | tr ' ' '_')"
+          sha7="$(echo "${{ steps.plan.outputs.to }}" | cut -c1-7)"
+          fmt="${{ steps.cfg.outputs.label_format }}"
+          label="${fmt//\{pr\}/${joined:-direct}}"
+          label="${label//\{sha7\}/$sha7}"
+          echo "list=${prs:-none}" >> "$GITHUB_OUTPUT"
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+          echo "PRs: ${prs:-none} -> version label $label"
+
+      - name: Set up agent
+        if: steps.plan.outputs.run != 'none' && steps.plan.outputs.relevant == 'true'
+        id: setup
+        uses: ./.github/actions/tm-setup
+        with:
+          mcp-url: ${{ steps.cfg.outputs.mcp_url }}
+          tm-api-key: ${{ secrets.TM_API_KEY }}
+
+      - name: Check live MCP tools
+        if: steps.plan.outputs.run != 'none' && steps.plan.outputs.relevant == 'true'
+        env:
+          TM_API_KEY: ${{ secrets.TM_API_KEY }}
+        run: python "$TM" preflight --url "${{ steps.cfg.outputs.mcp_url }}"
+
+      - name: Build prompt and tool list
+        if: steps.plan.outputs.run != 'none' && steps.plan.outputs.relevant == 'true'
+        id: tools
+        run: |
+          run="${{ steps.plan.outputs.run }}"
+          profile="post-merge-$run"
+          # model_updates: nexus takes the diagram tools away; only Nexus edits the diagram.
+          if [ "$run" = "apply" ] && [ "${{ steps.cfg.outputs.model_updates }}" = "nexus" ]; then
+            profile="post-merge-apply-nexus"
+          fi
+          req_flag=()
+          if [ "$run" = "apply" ] && [ "${{ steps.cfg.outputs.requirement_states }}" = "write" ]; then
+            req_flag=(--requirement-write)
+          fi
+          python "$TM" tool-args --profile "$profile" "${req_flag[@]}"
+          python "$TM" prompt \
+            --template ".github/threatmodeler/prompts/post-merge-$run.md" --out .tm/prompt.md \
+            --var "REPO=${{ github.repository }}" \
+            --var "FROM_SHA=${{ steps.plan.outputs.from }}" --var "TO_SHA=${{ steps.plan.outputs.to }}" \
+            --var "PR_LIST=${{ steps.prs.outputs.list }}" \
+            --var "PROJECT_GUID=${{ steps.cfg.outputs.project_guid }}" \
+            --var "VERSION_LABEL=${{ steps.prs.outputs.label }}" \
+            --var "REQUIREMENT_STATES=${{ steps.cfg.outputs.requirement_states }}" \
+            --var "MODEL_UPDATES=${{ steps.cfg.outputs.model_updates }}" \
+            --file-var "RELEVANT_FILES=.tm/relevant-files.txt"
+
+      # Read the model's size from ThreatModeler before the agent changes it, so
+      # the workflow (not the agent) can check what actually changed.
+      - name: Count model elements and flows (before)
+        if: steps.plan.outputs.run == 'apply' && steps.plan.outputs.relevant == 'true'
+        env:
+          TM_API_KEY: ${{ secrets.TM_API_KEY }}
+        run: python "$TM" diagram-counts --url "${{ steps.cfg.outputs.mcp_url }}" --project "${{ steps.cfg.outputs.project_guid }}" --out .tm/diagram-before.json
+
+      - name: Run agent
+        if: steps.plan.outputs.run != 'none' && steps.plan.outputs.relevant == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Expanded by Claude Code into the MCP header; not written to disk.
+          TM_API_KEY: ${{ secrets.TM_API_KEY }}
+          TM_AGENT_MODEL: ${{ vars.TM_AGENT_MODEL }}
+          ALLOWED: ${{ steps.tools.outputs.allowed }}
+          DENIED: ${{ steps.tools.outputs.denied }}
+        run: |
+          # Either secret works: an API key, or a subscription token from `claude setup-token`.
+          [ -n "$ANTHROPIC_API_KEY" ] || unset ANTHROPIC_API_KEY
+          [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] || unset CLAUDE_CODE_OAUTH_TOKEN
+          model_args=()
+          if [ -n "$TM_AGENT_MODEL" ]; then model_args=(--model "$TM_AGENT_MODEL"); fi
+          claude -p "$(cat .tm/prompt.md)" \
+            --mcp-config "${{ steps.setup.outputs.mcp-config }}" --strict-mcp-config \
+            --allowedTools "$ALLOWED" --disallowedTools "$DENIED" \
+            --max-turns 80 --output-format json "${model_args[@]}" \
+            > .tm/agent-transcript.json
+
+      # GitHub masks secrets in logs, not in artifacts or PR comments.
+      - name: Leak check
+        id: leak
+        if: always() && steps.plan.outputs.run != 'none' && steps.plan.outputs.relevant == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          TM_API_KEY: ${{ secrets.TM_API_KEY }}
+        run: python "$TM" leak-check --path .tm
+
+      - name: Validate result
+        if: steps.plan.outputs.run != 'none' && steps.plan.outputs.relevant == 'true'
+        run: python "$TM" validate --kind merge --file .tm/merge-result.json
+
+      # Saves the version only if the element and flow counts changed exactly as
+      # the agent reported and no diagram key is used twice. Fails otherwise,
+      # which keeps tm-synced where it is.
+      - name: Check the model and save the version
+        if: steps.plan.outputs.run == 'apply' && steps.plan.outputs.relevant == 'true'
+        env:
+          TM_API_KEY: ${{ secrets.TM_API_KEY }}
+        run: |
+          python "$TM" diagram-counts --url "${{ steps.cfg.outputs.mcp_url }}" --project "${{ steps.cfg.outputs.project_guid }}" --out .tm/diagram-after.json
+          python "$TM" save-version --url "${{ steps.cfg.outputs.mcp_url }}" --file .tm/merge-result.json \
+            --before .tm/diagram-before.json --after .tm/diagram-after.json --label "${{ steps.prs.outputs.label }}"
+
+      - name: Move tm-synced tag
+        if: steps.plan.outputs.run == 'apply' && steps.plan.outputs.from != steps.plan.outputs.to
+        run: |
+          if [ "${{ steps.plan.outputs.relevant }}" = "true" ]; then
+            read -r created changes missing < <(python -c "import json;r=json.load(open('.tm/merge-result.json'));print(r['version_created'], len(r['model_changes']), len(r.get('missing_from_model', [])))")
+            if [ "$missing" != "0" ]; then
+              echo "::error::The model in Nexus doesn't reflect this merge yet ($missing item(s) missing; see the PR comment). Add them in the Nexus diagram editor, then run this workflow with apply again. tm-synced stays at ${{ steps.plan.outputs.from }}."
+              exit 1
+            fi
+            if [ "$created" != "True" ] && [ "$changes" != "0" ]; then
+              echo "::error::Changes were planned but no version was saved; leaving tm-synced at ${{ steps.plan.outputs.from }} so the next apply run retries."
+              exit 1
+            fi
+          fi
+          git tag -f tm-synced "${{ steps.plan.outputs.to }}"
+          git push -f origin tm-synced
+
+      - name: Comment on merged PRs
+        # Also after a failed tag move, so the PR says what is missing from the model.
+        if: always() && steps.plan.outputs.run != 'none' && steps.plan.outputs.relevant == 'true' && steps.prs.outputs.list != 'none' && steps.leak.outcome == 'success' && hashFiles('.tm/merge-result.json') != ''
+        run: |
+          python "$TM" merge-comment --file .tm/merge-result.json --out .tm/merge-comment.md
+          for n in ${{ steps.prs.outputs.list }}; do
+            python "$TM" pr-comment --pr "$n" --file .tm/merge-comment.md
+          done
+          cat .tm/merge-comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.plan.outputs.run != 'none' && steps.plan.outputs.relevant == 'true' && steps.leak.outcome == 'success'
+        with:
+          name: tm-post-merge-${{ steps.plan.outputs.run }}-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          path: |
+            .tm/
+            !.tm/prompt.md
+          retention-days: 30

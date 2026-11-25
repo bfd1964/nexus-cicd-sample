@@ -1,0 +1,80 @@
+# Nexus MCP tools each job may call. Names match the live TMRC server as of
+# October 2026. The preflight step lists the live server's tools and fails if
+# a tool below is missing, so a rename shows up at once instead of as a
+# confusing agent failure.
+#
+# Anything not listed for a profile is not available to that job's agent.
+
+read: &read
+  - connectivity_tool
+  - list_projects
+  - get_project
+  - list_project_components
+  - list_project_threats
+  - export_project
+  - get_async_operation
+  # Replaced list_security_requirements and get_security_requirement
+  # (October 2026): lists a project's requirements, or one by id.
+  - get_project_security_requirement
+  - search_security_requirements
+  - list_security_requirement_statuses
+  # get_threat was removed; list_project_threats with threatId replaces it.
+  - search_threats
+  # Library-wide requirement and threat definitions, for new components.
+  - list_all_security_requirements
+  - list_all_threats
+  # 26.2 removed list_components; suggest_components is the only component search.
+  - suggest_components
+  - list_libraries
+  - list_protocols
+  - list_trust_boundaries
+  - read_skill
+
+# Tools that change Nexus. Denied explicitly in read-only profiles.
+write_all:
+  - create_project
+  - create_project_version
+  - import_kis_diagram
+  - update_kis_diagram
+  - create_components
+  - add_components_threats_and_srs
+  - create_threats
+  - update_threat_risk
+  - update_threat_state
+  - create_security_requirements
+  - update_security_requirement_state
+  - create_security_requirement_comment
+  - add_threats_security_requirements
+  - create_integration_issue
+  - execute_storedprocedure
+
+profiles:
+  pr-check:
+    allow: [read]
+  post-merge-propose:
+    allow: [read]
+  post-merge-apply:
+    allow: [read]
+    extra:
+      - query_table
+      - update_kis_diagram
+  # post-merge-apply when model_updates is "nexus": no diagram tools. The
+  # diagram is changed only in Nexus.
+  post-merge-apply-nexus:
+    allow: [read]
+    extra:
+      - query_table
+  # Called by tm.py itself, not by the agent: it counts the model's elements
+  # and flows before and after the agent and saves the version only if they
+  # match what the agent reported. Listed so the tool check covers them.
+  workflow-direct:
+    allow: []
+    extra:
+      - list_project_components
+      - create_project_version
+  # Added to post-merge-apply only when requirement_states is "write".
+  requirement-write:
+    allow: []
+    extra:
+      - update_security_requirement_state
+      - create_security_requirement_comment

@@ -1,0 +1,48 @@
+# Maps this repository to its threat model in ThreatModeler Nexus.
+
+threatmodeler:
+  # Your Nexus address. The MCP endpoint is always <instance_url>/mcp.
+  instance_url: https://tmrc.threatmodeler.com
+  # GUID of the baseline threat model. Leave empty until you've created it
+  # (setup guide, step 5), then paste it here and commit to main.
+  project_guid: ""
+  # Name of the baseline threat model. Letters, digits, spaces and
+  # _ . : ; - @ % ! , ? & * $ only.
+  project_name: Nexus CICD Sample
+
+# Only changes to these paths run the check. Other pull requests get a
+# "No architectural change" comment and the agent doesn't run.
+architectural_paths:
+  - infra/**
+  - app/Dockerfile
+  - app/package.json
+  - app/src/**
+  - api/**
+
+policy:
+  # advisory: always pass the check; findings are informational.
+  # enforce:  fail the check when a finding at a blocking severity is present.
+  mode: enforce
+  block_on_severity: [critical, high]
+  # Added to pull requests the agent rates "significant".
+  review_label: tm-architect-review
+
+post_merge:
+  # off:     nothing runs after a merge.
+  # propose: after each merge, CI comments the expected model changes on the PR.
+  # apply:   as propose, and a person can run "TM post-merge sync" with
+  #          "apply" checked to record the merge in Nexus and save a version.
+  mode: "apply"   # keep the quotes: YAML reads a bare off as false
+  # suggest: CI lists requirements the code appears to meet; people set statuses.
+  # write:   an apply run sets statuses on code evidence, each with a comment
+  #          citing the file, line and commit.
+  requirement_states: write
+  # pipeline: the apply run adds the merged changes to the diagram, then
+  #           writes requirement statuses and saves the version.
+  # nexus:    the diagram is changed only in Nexus, by hand; the apply run
+  #           checks it, writes requirement statuses and saves the version.
+  model_updates: pipeline
+
+versioning:
+  # Label of the version saved by an apply run. {pr} and {sha7} are replaced.
+  label_format: "pr-{pr}-{sha7}"

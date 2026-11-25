@@ -1,0 +1,37 @@
+name: ThreatModeler agent setup
+description: Install Python deps and Claude Code, and write the Nexus MCP config.
+inputs:
+  mcp-url:
+    description: Nexus MCP endpoint (<instance>/mcp)
+    required: true
+  tm-api-key:
+    description: Nexus API key for a user holding the MCP Access role
+    required: true
+outputs:
+  mcp-config:
+    description: Path to the MCP config file
+    value: ${{ steps.mcp.outputs.path }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+    - name: Install tools
+      shell: bash
+      run: |
+        pip install --quiet pyyaml jsonschema
+        npm install --global --silent @anthropic-ai/claude-code
+        claude --version
+    - name: Write MCP config
+      id: mcp
+      shell: bash
+      env:
+        TM_API_KEY: ${{ inputs.tm-api-key }}
+      run: |
+        path="$RUNNER_TEMP/tm-mcp.json"
+        python .github/threatmodeler/scripts/tm.py mcp-config --url "${{ inputs.mcp-url }}" --out "$path"
+        echo "path=$path" >> "$GITHUB_OUTPUT"

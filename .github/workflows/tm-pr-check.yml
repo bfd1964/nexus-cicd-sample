@@ -1,0 +1,198 @@
+name: TM architecture check
+
+# Compares each pull request against the baseline threat model in Nexus.
+# Read-only: this check never changes Nexus. What happens after merge is set by
+# post_merge.mode in .threatmodeler.yml (see tm-post-merge.yml).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: tm-pr-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # The status check name to require in a branch ruleset.
+    name: ThreatModeler architecture check
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR: ${{ github.event.pull_request.number }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      # The agent reviews the PR's code, but the check's own instructions, tool
+      # list, schemas, scripts and settings come from the current tip of the
+      # target branch, so a pull request can't weaken the review of itself and
+      # open pull requests pick up kit updates merged since they were opened.
+      # (The workflow file itself is protected by CODEOWNERS and branch rules.)
+      - name: Use the check's own files from the target branch
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git fetch --quiet origin "refs/heads/$BASE_REF"
+          target="$(git rev-parse FETCH_HEAD)"
+          git checkout "$target" -- .github/threatmodeler .github/actions/tm-setup .threatmodeler.yml
+          echo "Check files taken from $BASE_REF at $target; reviewing code at $HEAD_SHA."
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pyyaml jsonschema
+
+      - name: Read config
+        id: cfg
+        run: python .github/threatmodeler/scripts/tm.py config --require-guid
+
+      - name: Find changed architecture files
+        id: diff
+        run: |
+          git fetch --tags --force --quiet
+          python .github/threatmodeler/scripts/tm.py prefilter --base "$BASE_SHA" --head "$HEAD_SHA"
+          python .github/threatmodeler/scripts/tm.py baseline --base "$BASE_SHA" --head "$HEAD_SHA"
+
+      - name: No architectural change
+        if: steps.diff.outputs.relevant == 'false'
+        run: |
+          python .github/threatmodeler/scripts/tm.py comment --pr "$PR" --head-sha "$HEAD_SHA" \
+            --skip-reason "none of the ${{ steps.diff.outputs.changed_count }} changed file(s) match architectural_paths in .threatmodeler.yml."
+
+      - name: Set up agent
+        if: steps.diff.outputs.relevant == 'true'
+        id: setup
+        uses: ./.github/actions/tm-setup
+        with:
+          mcp-url: ${{ steps.cfg.outputs.mcp_url }}
+          tm-api-key: ${{ secrets.TM_API_KEY }}
+
+      - name: Check live MCP tools
+        id: preflight
+        if: steps.diff.outputs.relevant == 'true'
+        env:
+          TM_API_KEY: ${{ secrets.TM_API_KEY }}
+        run: python .github/threatmodeler/scripts/tm.py preflight --url "${{ steps.cfg.outputs.mcp_url }}"
+
+      - name: Build prompt
+        id: tools
+        if: steps.diff.outputs.relevant == 'true'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s' "${PR_BODY:-(no description)}" > .tm/pr-body.txt
+          python .github/threatmodeler/scripts/tm.py tool-args --profile pr-check
+          python .github/threatmodeler/scripts/tm.py prompt \
+            --template .github/threatmodeler/prompts/pr-review.md --out .tm/prompt.md \
+            --var "REPO=${{ github.repository }}" --var "PR_NUMBER=$PR" --var "PR_TITLE=$PR_TITLE" \
+            --var "BASE_SHA=$BASE_SHA" --var "HEAD_SHA=$HEAD_SHA" \
+            --var "MERGE_BASE=${{ steps.diff.outputs.merge_base }}" \
+            --var "PROJECT_GUID=${{ steps.cfg.outputs.project_guid }}" \
+            --var "PROJECT_NAME=${{ steps.cfg.outputs.project_name }}" \
+            --file-var "PR_BODY=.tm/pr-body.txt" --file-var "RELEVANT_FILES=.tm/relevant-files.txt" \
+            --file-var "BASELINE_CONTEXT=.tm/baseline-context.md"
+
+      - name: Run agent
+        id: agent
+        if: steps.diff.outputs.relevant == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Expanded by Claude Code into the MCP header; not written to disk.
+          TM_API_KEY: ${{ secrets.TM_API_KEY }}
+          TM_AGENT_MODEL: ${{ vars.TM_AGENT_MODEL }}
+          ALLOWED: ${{ steps.tools.outputs.allowed }}
+          DENIED: ${{ steps.tools.outputs.denied }}
+        run: |
+          # Either secret works: an API key, or a subscription token from `claude setup-token`.
+          [ -n "$ANTHROPIC_API_KEY" ] || unset ANTHROPIC_API_KEY
+          [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] || unset CLAUDE_CODE_OAUTH_TOKEN
+          model_args=()
+          if [ -n "$TM_AGENT_MODEL" ]; then model_args=(--model "$TM_AGENT_MODEL"); fi
+          claude -p "$(cat .tm/prompt.md)" \
+            --mcp-config "${{ steps.setup.outputs.mcp-config }}" --strict-mcp-config \
+            --allowedTools "$ALLOWED" --disallowedTools "$DENIED" \
+            --max-turns 60 --output-format json "${model_args[@]}" \
+            > .tm/agent-transcript.json
+
+      # GitHub masks secrets in logs, not in artifacts or PR comments.
+      - name: Leak check
+        id: leak
+        if: always() && steps.diff.outputs.relevant == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          TM_API_KEY: ${{ secrets.TM_API_KEY }}
+        run: python .github/threatmodeler/scripts/tm.py leak-check --path .tm
+
+      - name: Validate result
+        id: validate
+        if: steps.diff.outputs.relevant == 'true'
+        run: python .github/threatmodeler/scripts/tm.py validate --kind pr --file .tm/result.json
+
+      - name: Post PR comment
+        id: post
+        if: steps.diff.outputs.relevant == 'true'
+        run: |
+          python .github/threatmodeler/scripts/tm.py comment --pr "$PR" --head-sha "$HEAD_SHA" \
+            --synced-sha "${{ steps.diff.outputs.synced_sha }}" \
+            --baseline-state "${{ steps.diff.outputs.baseline_state }}" --file .tm/result.json
+
+      - name: Architect review label
+        if: steps.diff.outputs.relevant == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LABEL: ${{ steps.cfg.outputs.review_label }}
+        run: |
+          sig="$(python -c "import json;print(json.load(open('.tm/result.json'))['significance'])")"
+          if [ "$sig" = "significant" ]; then
+            gh label create "$LABEL" --color D93F0B --description "ThreatModeler: architect review" 2>/dev/null || true
+            gh pr edit "$PR" --add-label "$LABEL"
+          else
+            gh pr edit "$PR" --remove-label "$LABEL" 2>/dev/null || true
+          fi
+
+      - name: Apply policy
+        if: steps.diff.outputs.relevant == 'true'
+        run: python .github/threatmodeler/scripts/tm.py policy --file .tm/result.json
+
+      - name: Report failure on PR
+        if: failure() && steps.diff.outputs.relevant == 'true' && steps.post.outcome != 'success'
+        run: |
+          # Say which step failed, so the PR doesn't blame the agent for a
+          # tool-check or connection failure that happened before it ran.
+          if [ "${{ steps.preflight.outcome }}" = "failure" ]; then
+            reason="$(cat .tm/preflight-error.txt 2>/dev/null || echo "the ThreatModeler tool check failed; see the run log")"
+            msg="${reason%.}. The agent did not run."
+          elif [ "${{ steps.agent.outcome }}" = "failure" ]; then
+            msg="the agent run failed before producing a result."
+          elif [ "${{ steps.validate.outcome }}" = "failure" ]; then
+            msg="the agent's result didn't match the expected format."
+          else
+            msg="a step after the agent failed; see the run log."
+          fi
+          python .github/threatmodeler/scripts/tm.py comment --pr "$PR" --head-sha "$HEAD_SHA" \
+            --error "$msg"
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.diff.outputs.relevant == 'true' && steps.leak.outcome == 'success'
+        with:
+          name: tm-pr-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          path: |
+            .tm/
+            !.tm/prompt.md
+          retention-days: 14

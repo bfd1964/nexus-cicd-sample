@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ThreatModeler post-merge result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "mode",
+    "project_guid",
+    "version_label",
+    "version_created",
+    "model_changes",
+    "requirement_updates",
+    "errors"
+  ],
+  "properties": {
+    "project_guid": {
+      "type": "string"
+    },
+    "version_label": {
+      "type": "string"
+    },
+    "version_created": {
+      "type": "boolean",
+      "description": "Set by the workflow after it checks the diagram and saves the version; the agent writes false"
+    },
+    "version_due": {
+      "type": "boolean",
+      "description": "apply: the agent's view that the model reflects the merged code and needs a new version"
+    },
+    "diagram_check": {
+      "type": "object",
+      "description": "Written by the workflow: element and flow counts before and after the agent, and what the agent reported"
+    },
+    "version_notes": {
+      "type": "string"
+    },
+    "model_changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "action",
+          "element"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "element": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "missing_from_model": {
+      "type": "array",
+      "description": "model_updates nexus: changes in the merged code that the model doesn't contain yet",
+      "items": {
+        "type": "object",
+        "required": [
+          "element"
+        ],
+        "properties": {
+          "element": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "requirement_updates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "requirement_id",
+          "name",
+          "new_status"
+        ],
+        "properties": {
+          "requirement_id": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "old_status": {
+            "type": "string"
+          },
+          "new_status": {
+            "type": "string"
+          },
+          "comment_added": {
+            "type": "boolean",
+            "description": "Whether a requirement comment citing the evidence was created and read back"
+          },
+          "comment": {
+            "type": "string",
+            "description": "The comment text, citing file:line and the commit"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "mode": {
+      "enum": [
+        "propose",
+        "apply"
+      ]
+    },
+    "requirement_suggestions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requirement_id",
+          "name",
+          "component",
+          "evidence",
+          "evidence_strength"
+        ],
+        "properties": {
+          "requirement_id": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "component": {
+            "type": "string"
+          },
+          "current_status": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "snippet": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "file"
+            ],
+            "additionalProperties": false
+          },
+          "evidence_strength": {
+            "enum": [
+              "declared_in_code",
+              "stated_in_document",
+              "drawn_on_diagram",
+              "stated_by_user"
+            ],
+            "description": "26.2 evidence strength. Only declared_in_code may support a status change."
+          }
+        }
+      }
+    },
+    "restore_point_observed": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Whether a restore point appeared in version history after the writes (null = could not tell)"
+    }
+  }
+}

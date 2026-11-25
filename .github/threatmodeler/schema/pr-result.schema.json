@@ -1,0 +1,301 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ThreatModeler PR check result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "model",
+    "significance",
+    "significance_reason",
+    "summary",
+    "architecture_changes",
+    "findings",
+    "requirements_satisfied",
+    "model_update_plan"
+  ],
+  "properties": {
+    "model": {
+      "type": "object",
+      "required": [
+        "project_guid",
+        "name"
+      ],
+      "properties": {
+        "project_guid": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "baseline_component_count": {
+          "type": "integer"
+        },
+        "baseline_requirement_count": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "significance": {
+      "enum": [
+        "none",
+        "minor",
+        "significant"
+      ]
+    },
+    "significance_reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "2-4 sentences, developer language"
+    },
+    "architecture_changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "change",
+          "element_type",
+          "name"
+        ],
+        "properties": {
+          "change": {
+            "enum": [
+              "added",
+              "modified",
+              "removed"
+            ]
+          },
+          "element_type": {
+            "enum": [
+              "component",
+              "data_flow",
+              "trust_boundary",
+              "protocol",
+              "attribute",
+              "external_dependency"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "library_component": {
+            "type": "string"
+          },
+          "details": {
+            "type": "string"
+          },
+          "source": {
+            "type": "object",
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "snippet": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "file"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "type",
+          "severity",
+          "title",
+          "component",
+          "explanation",
+          "blocking"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "countermeasure_gap",
+              "new_attack_surface",
+              "trust_boundary_change",
+              "control_removed",
+              "policy"
+            ]
+          },
+          "severity": {
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low",
+              "info"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "component": {
+            "type": "string"
+          },
+          "explanation": {
+            "type": "string"
+          },
+          "requirement": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": [
+                  "string",
+                  "integer"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "source": {
+                "enum": [
+                  "baseline_model",
+                  "library",
+                  "inferred"
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "snippet": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "file"
+            ],
+            "additionalProperties": false
+          },
+          "fix": {
+            "type": "object",
+            "properties": {
+              "summary": {
+                "type": "string"
+              },
+              "suggested_code": {
+                "type": "string"
+              },
+              "language": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "blocking": {
+            "type": "boolean"
+          },
+          "evidence_strength": {
+            "enum": [
+              "declared_in_code",
+              "stated_in_document",
+              "drawn_on_diagram",
+              "stated_by_user"
+            ],
+            "description": "26.2 evidence strength. Only declared_in_code may support a status change."
+          }
+        }
+      }
+    },
+    "requirements_satisfied": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requirement_id",
+          "name",
+          "component",
+          "evidence",
+          "evidence_strength"
+        ],
+        "properties": {
+          "requirement_id": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "component": {
+            "type": "string"
+          },
+          "current_status": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "snippet": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "file"
+            ],
+            "additionalProperties": false
+          },
+          "evidence_strength": {
+            "enum": [
+              "declared_in_code",
+              "stated_in_document",
+              "drawn_on_diagram",
+              "stated_by_user"
+            ],
+            "description": "26.2 evidence strength. Only declared_in_code may support a status change."
+          }
+        }
+      }
+    },
+    "baseline_note": {
+      "type": "string",
+      "description": "Where the model and the code this PR started from disagree in ways the PR's diff does not explain (baseline drift). Never counted as a finding."
+    },
+    "model_update_plan": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "What the post-merge job should change in the model"
+    }
+  }
+}
