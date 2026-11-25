@@ -5,6 +5,7 @@ const express = require("express");
 const { requireAuth } = require("./auth");
 const db = require("./db");
 const storage = require("./storage");
+const { cached } = require("./cache");
 
 const app = express();
 app.use(express.json({ limit: "100kb" }));
@@ -12,7 +13,9 @@ app.use(express.json({ limit: "100kb" }));
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
 app.get("/invoices", requireAuth, async (req, res) => {
-  const rows = await db.listInvoices(req.user.merchantId);
+  const rows = await cached(`invoices:${req.user.merchantId}`, 60, () =>
+    db.listInvoices(req.user.merchantId)
+  );
   res.json(rows);
 });
 
