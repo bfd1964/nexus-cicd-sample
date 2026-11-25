@@ -5,7 +5,7 @@ threatmodeler:
   instance_url: https://tmrc.threatmodeler.us
   # GUID of the baseline threat model. Leave empty until you've created it
   # (setup guide, step 5), then paste it here and commit to main.
-  project_guid: ""
+  project_guid: "736919c3-1d18-4013-885e-f9f3307931f8"
   # Name of the baseline threat model. Letters, digits, spaces and
   # _ . : ; - @ % ! , ? & * $ only.
   project_name: Nexus CICD Sample
