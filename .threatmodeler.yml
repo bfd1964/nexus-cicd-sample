@@ -2,7 +2,7 @@
 
 threatmodeler:
   # Your Nexus address. The MCP endpoint is always <instance_url>/mcp.
-  instance_url: https://tmrc.threatmodeler.com
+  instance_url: https://tmrc.threatmodeler.us
   # GUID of the baseline threat model. Leave empty until you've created it
   # (setup guide, step 5), then paste it here and commit to main.
   project_guid: ""
