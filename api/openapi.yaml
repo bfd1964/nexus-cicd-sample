@@ -55,3 +55,9 @@ paths:
       responses:
         "200": { description: Link to the invoice PDF }
         "404": { description: Not found }
+  /admin/export:
+    get:
+      security: []
+      description: Export every invoice across all merchants (ops use).
+      responses:
+        "200": { description: All invoices }

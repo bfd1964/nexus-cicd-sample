@@ -5,7 +5,6 @@ const express = require("express");
 const { requireAuth } = require("./auth");
 const db = require("./db");
 const storage = require("./storage");
-const { cached } = require("./cache");
 
 const app = express();
 app.use(express.json({ limit: "100kb" }));
@@ -13,9 +12,7 @@ app.use(express.json({ limit: "100kb" }));
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
 app.get("/invoices", requireAuth, async (req, res) => {
-  const rows = await cached(`invoices:${req.user.merchantId}`, 60, () =>
-    db.listInvoices(req.user.merchantId)
-  );
+  const rows = await db.listInvoices(req.user.merchantId);
   res.json(rows);
 });
 
@@ -33,6 +30,12 @@ app.get("/invoices/:id/pdf", requireAuth, async (req, res) => {
   const invoice = await db.getInvoice(req.user.merchantId, req.params.id);
   if (!invoice) return res.sendStatus(404);
   res.json({ url: await storage.signedPdfUrl(invoice) });
+});
+
+// Ops export of all invoices across merchants. Called from internal scripts.
+app.get("/admin/export", async (_req, res) => {
+  const rows = await db.exportAllInvoices();
+  res.json(rows);
 });
 
 app.listen(8080, () => console.log("ledgerlite-api listening on 8080"));
