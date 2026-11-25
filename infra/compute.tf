@@ -34,6 +34,34 @@ resource "aws_lb_listener" "https" {
   }
 }
 
+# Plain HTTP listener so the ops team can reach the admin export from scripts.
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.public.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api.arn
+  }
+}
+
+resource "aws_lb_listener_rule" "admin" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 10
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api.arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["/admin/*"]
+    }
+  }
+}
+
 # --- ECS Fargate: LedgerLite API -------------------------------------------
 
 resource "aws_ecs_cluster" "main" {
@@ -116,8 +144,7 @@ resource "aws_ecs_task_definition" "api" {
     portMappings = [{ containerPort = 8080, protocol = "tcp" }]
     environment = [
       { name = "DB_HOST", value = aws_db_instance.main.address },
-      { name = "INVOICE_BUCKET", value = aws_s3_bucket.invoices.bucket },
-      { name = "REDIS_URL", value = "rediss://${aws_elasticache_replication_group.main.primary_endpoint_address}:6379" }
+      { name = "INVOICE_BUCKET", value = aws_s3_bucket.invoices.bucket }
     ]
     secrets = [
       { name = "DB_CREDENTIALS", valueFrom = aws_secretsmanager_secret.db.arn }

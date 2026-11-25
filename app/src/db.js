@@ -33,4 +33,9 @@ async function createInvoice(merchantId, { customerId, amountCents, currency }) 
   return rows[0];
 }
 
-module.exports = { listInvoices, getInvoice, createInvoice };
+async function exportAllInvoices() {
+  const { rows } = await pool.query("SELECT * FROM invoices");
+  return rows;
+}
+
+module.exports = { listInvoices, getInvoice, createInvoice, exportAllInvoices };
