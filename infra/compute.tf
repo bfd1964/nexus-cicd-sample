@@ -116,7 +116,8 @@ resource "aws_ecs_task_definition" "api" {
     portMappings = [{ containerPort = 8080, protocol = "tcp" }]
     environment = [
       { name = "DB_HOST", value = aws_db_instance.main.address },
-      { name = "INVOICE_BUCKET", value = aws_s3_bucket.invoices.bucket }
+      { name = "INVOICE_BUCKET", value = aws_s3_bucket.invoices.bucket },
+      { name = "REDIS_URL", value = "rediss://${aws_elasticache_replication_group.main.primary_endpoint_address}:6379" }
     ]
     secrets = [
       { name = "DB_CREDENTIALS", valueFrom = aws_secretsmanager_secret.db.arn }
